@@ -1,0 +1,22 @@
+[package]
+name = "code-analyser"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+name = "libcode_analyser"
+path = "src/lib.rs"
+
+[[bin]]
+name = "code_analyser"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.4.11", features = ["derive"] }
+tree-sitter = "0.20.10"
+tree-sitter-typescript = "0.20.3"
+
+[build-dependencies]
+cc="*"
