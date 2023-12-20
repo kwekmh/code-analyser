@@ -1,43 +1,62 @@
-use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use tree_sitter::{Parser, Query, QueryCursor, Tree};
+use crate::backends::{ParsedDirectory, ParsedFile, ParserError};
 use crate::utils::find_by_extensions_in_dir;
 
 pub struct TypeScriptBackend {
     parser: Parser,
-    parsed: Option<Box<HashMap<OsString, Tree>>>,
+}
+
+#[derive(Debug)]
+pub enum TypeScriptImportType {
+    Unknown,
+    NamedImport,
+    NamespaceImport,
+}
+
+#[derive(Debug)]
+pub struct TypeScriptImport {
+    import_source: String,
+    import_type: TypeScriptImportType,
+    import_name: String,
+    import_alias: Option<String>
 }
 
 impl TypeScriptBackend {
     pub fn new() -> TypeScriptBackend {
         let mut backend = TypeScriptBackend {
             parser: Parser::new(),
-            parsed: None,
         };
         backend.parser.set_language(tree_sitter_typescript::language_typescript()).expect("Error loading TypeScript grammar");
         backend
     }
-    pub fn parse_directory(&mut self, directory: &OsStr) -> &Option<Box<HashMap<OsString, Tree>>> {
-        let mut parser = &mut self.parser;
+    pub fn parse_directory(&mut self, directory: &OsStr) -> Result<ParsedDirectory, ParserError> {
+        let parser = &mut self.parser;
         let paths = find_by_extensions_in_dir(directory, &vec![OsStr::new("ts")]);
-        let mut map: HashMap<OsString, Tree> = HashMap::new();
+        let mut parsed_files: Vec<ParsedFile> = vec![];
         for path in paths {
             match fs::read_to_string(&path) {
                 Ok(source_code) => {
-                    let tree = parser.parse(&source_code, None).unwrap();
-                    map.insert(path, tree);
+                    let tree = parser.parse(&source_code, None);
+                    parsed_files.push(ParsedFile {
+                        tree,
+                        source_code,
+                        source_path: path
+                    });
                 },
                 Err(e) => {
                     println!("{:?}", e)
                 }
             }
         }
-        self.parsed = Some(Box::new(map));
-        &self.parsed
+        Ok(ParsedDirectory {
+            directory: OsString::from(directory),
+            parsed_files,
+        })
     }
 
-    pub fn find_function_calls_in_tree(tree: &Tree, source: &str, function_name: &str) {
+    pub fn get_function_calls_in_tree(tree: &Tree, source: &str, function_name: &str) {
         let query = Query::new(tree_sitter_typescript::language_typescript(),
                                &format!(r#"
                 ((call_expression
@@ -62,7 +81,8 @@ impl TypeScriptBackend {
         }
     }
 
-    pub fn find_imports_in_tree(tree: &Tree, source: &str) {
+    pub fn get_imports_in_tree(tree: &Tree, source: &str) -> Vec<TypeScriptImport> {
+        let mut imports: Vec<TypeScriptImport> = vec![];
         let query = Query::new(tree_sitter_typescript::language_typescript(),
                                r#"
                            (import_statement
@@ -81,22 +101,65 @@ impl TypeScriptBackend {
         let mut query_cursor = QueryCursor::new();
         let all_matches = query_cursor.matches(&query, tree.root_node(), source.as_bytes());
         for each_match in all_matches {
+            let mut is_not_first_import = false;
+            let mut imports_to_add: Vec<TypeScriptImport> = vec![];
             for capture in each_match.captures {
                 let range = capture.node.range();
                 let text = &source[range.start_byte..range.end_byte];
-                let line = range.start_point.row;
-                let col = range.start_point.column;
-                let capture_name = match capture.index {
-                    idx if idx == named_import_idx => "named_import",
-                    idx if idx == namespace_import_idx => "namespace_import",
-                    idx if idx == source_idx => "source",
-                    idx if idx == import_idx => "import",
-                    idx if idx == alias_idx => "alias",
-                    idx if idx == import_with_alias_idx => "import_with_alias",
-                    _ => "Unknown",
+                match capture.index {
+                    idx if idx == import_idx => {
+                        let import = TypeScriptImport {
+                            import_source: "".to_string(),
+                            import_type: TypeScriptImportType::Unknown,
+                            import_name: "".to_string(),
+                            import_alias: None,
+                        };
+                        imports_to_add.push(import);
+                    },
+                    idx if idx == import_with_alias_idx => {
+                        if is_not_first_import {
+                            let import = TypeScriptImport {
+                                import_source: "".to_string(),
+                                import_type: TypeScriptImportType::Unknown,
+                                import_name: "".to_string(),
+                                import_alias: None,
+                            };
+                            imports_to_add.push(import);
+                        } else {
+                            is_not_first_import = true;
+                        }
+                    },
+                    idx if idx == named_import_idx => {
+                        if let Some(import) = imports_to_add.last_mut() {
+                            import.import_name = String::from(text);
+                            import.import_type = TypeScriptImportType::NamedImport;
+                            is_not_first_import = true;
+                        }
+                    },
+                    idx if idx == namespace_import_idx => {
+                        if let Some(import) = imports_to_add.last_mut() {
+                            import.import_name = String::from(text);
+                            import.import_type = TypeScriptImportType::NamespaceImport;
+                            is_not_first_import = true;
+                        }
+                    },
+                    idx if idx == source_idx =>  {
+                        for import in imports_to_add.iter_mut() {
+                            import.import_source = String::from(text);
+                        }
+                    },
+                    idx if idx == alias_idx => {
+                        if let Some(import) = imports_to_add.last_mut() {
+                            import.import_alias = Some(String::from(text));
+                        }
+                    },
+                    _ => {},
                 };
-                println!("[Line: {}, Col: {}, Match: {}, Name: {}] Found: `{}`", line, col, each_match.id(), capture_name, text);
+            }
+            for import in imports_to_add {
+                imports.push(import);
             }
         }
+        imports
     }
 }

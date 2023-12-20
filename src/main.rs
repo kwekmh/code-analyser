@@ -1,5 +1,4 @@
 use std::ffi::OsStr;
-use std::fs;
 use libcode_analyser::backends::typescript::backend::TypeScriptBackend;
 use clap::Parser;
 
@@ -15,15 +14,19 @@ fn main() {
     let args = Args::parse();
     let mut typescript_backend = TypeScriptBackend::new();
     match typescript_backend.parse_directory(OsStr::new(&args.directory)) {
-        Some(parsed) => {
-            for (k, v) in parsed.iter() {
-                println!("{:?} => {:?}", k, v);
-                TypeScriptBackend::find_function_calls_in_tree(&v, &fs::read_to_string(k).unwrap(), "replaceMeHere");
-                TypeScriptBackend::find_imports_in_tree(&v, &fs::read_to_string(k).unwrap());
+        Ok(parsed_directory) => {
+            for parsed_file in parsed_directory.get_parsed_files() {
+                println!("==================");
+                println!("{:?}", parsed_file);
+                if let Some(&ref tree) = parsed_file.get_parse_tree().as_ref() {
+                    TypeScriptBackend::get_function_calls_in_tree(&tree, &parsed_file.get_source_code(), "replaceMeHere");
+                    let imports = TypeScriptBackend::get_imports_in_tree(&tree, &parsed_file.get_source_code());
+                    for import in &imports {
+                        println!("Import: {:?}", import);
+                    }
+                }
             }
         },
-        None => {
-            println!("Nothing was parsed");
-        }
+        Err(e) => { println!("{}", e); }
     }
 }
